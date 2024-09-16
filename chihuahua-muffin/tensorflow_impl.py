@@ -1,29 +1,33 @@
 import tensorflow as tf
 from tensorflow.keras import layers, models, optimizers # type: ignore
 from tensorflow.keras.preprocessing.image import ImageDataGenerator # type: ignore
+from tensorflow.keras.applications import MobileNetV2 # type: ignore
+from tensorflow.keras.callbacks import ModelCheckpoint # type: ignore
 
 # Hyperparameters
-epochs = 9
-batch_size = 24
-learning_rate = 0.0001
+epochs = 5
+batch_size = 64
 height = 224
 width = 224
 
 train_path = "dataset/train"
-validation_path = "dataset/validation"
 test_path = "dataset/test"
 
 # Data augmentation and preprocessing
-train_datagen = ImageDataGenerator(
+datagen = ImageDataGenerator(
     rescale=1.0/255,
-    rotation_range=10,
-    brightness_range=[0.9, 1.1],
-    zoom_range=0.05,
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
     horizontal_flip=True,
+    fill_mode='nearest',
     validation_split=0.2
 )
 
-train_generator = train_datagen.flow_from_directory(
+# Load training data
+train_generator = datagen.flow_from_directory(
     train_path,
     target_size=(height, width),
     batch_size=batch_size,
@@ -31,16 +35,16 @@ train_generator = train_datagen.flow_from_directory(
     subset='training'
 )
 
-validation_datagen = ImageDataGenerator(rescale=1.0/255)
-
-validation_generator = validation_datagen.flow_from_directory(
-    validation_path,
+# Load validation data
+validation_generator = datagen.flow_from_directory(
+    train_path,
     target_size=(height, width),
     batch_size=batch_size,
     class_mode='categorical',
+    subset='validation'
 )
 
-
+# Prepare test data
 test_datagen = ImageDataGenerator(rescale=1.0/255)
 test_generator = test_datagen.flow_from_directory(
     test_path,
@@ -49,22 +53,44 @@ test_generator = test_datagen.flow_from_directory(
     class_mode='categorical'
 )
 
-# Define the model
-model = models.Sequential()
-model.add(tf.keras.applications.MobileNetV3Small(weights='imagenet', include_top=False, input_shape=(height, width, 3)))
-model.add(layers.GlobalAveragePooling2D())
-model.add(layers.Dense(len(train_generator.class_indices), activation='softmax'))
+num_classes = train_generator.num_classes
 
-# Compile the model
-model.compile(optimizer=optimizers.Adam(learning_rate=learning_rate),
-              loss='categorical_crossentropy',
-              metrics=['accuracy'])
+base_model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(height, width, 3))
+base_model.trainable = False
 
-model.summary()
+model = models.Sequential([
+    base_model,
+    layers.GlobalAveragePooling2D(),
+    layers.Dense(128, activation='relu'),
+    layers.Dropout(0.5),
+    layers.Dense(num_classes, activation='softmax')
+])
+
+model.compile(
+    optimizer=optimizers.Adam(),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+# Create a ModelCheckpoint callback to save the best model
+checkpoint = ModelCheckpoint(
+    'best_model.keras',
+    monitor='val_loss',
+    save_best_only=True,
+    mode='min'
+)
+
 # Train the model
-model.fit(train_generator,
-          validation_data=validation_generator,
-          epochs=epochs)
+history = model.fit(
+    train_generator,
+    validation_data=validation_generator,
+    epochs=epochs,
+    callbacks=[checkpoint]
+)
 
-test_loss, test_accuracy = model.evaluate(test_generator)
-print(f'Test results: Test loss: {test_loss:.4f} | Test accuracy: {test_accuracy:.2f}%')
+# Load the best model
+best_model = tf.keras.models.load_model('best_model.keras')
+
+# Evaluate on test set using the best model
+test_loss, test_accuracy = best_model.evaluate(test_generator)
+print(f"Test accuracy: {test_accuracy:.4f}")
